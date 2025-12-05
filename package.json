@@ -1,0 +1,35 @@
+{
+  "name": "55system",
+  "version": "1.0.0",
+  "description": "Sistema ETL para telefonia 55PBX com relatórios via WhatsApp",
+  "type": "module",
+  "main": "CORE/server.js",
+  "scripts": {
+    "start": "node CORE/server.js",
+    "dev": "node --watch CORE/server.js"
+  },
+  "keywords": [
+    "etl",
+    "telefonia",
+    "55pbx",
+    "whatsapp",
+    "baileys",
+    "redis",
+    "reports"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.6.2",
+    "cors": "^2.8.5",
+    "date-fns": "^3.0.6",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "ioredis": "^5.3.2",
+    "node-cron": "^3.0.3",
+    "ws": "^8.14.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -54,18 +54,31 @@ function formatDateForAPI(date) {
 }
 
 /**
- * Busca dados de UMA fila específica
- * @param {Date} dateStart - Data início
- * @param {Date} dateEnd - Data fim
- * @param {string} queue - Nome/ID da fila
- * @returns {Promise<Object|null>} Dados da fila
+ * Busca dados de ligações do dia atual
+ * 
+ * @param {Date} date - Data de referência (padrão: hoje)
+ * @returns {Promise<Object>} Dados agregados
  */
-async function fetchQueueData(dateStart, dateEnd, queue) {
+export async function fetchTodayCalls(date = new Date()) {
+  if (!isConfigured()) {
+    console.warn('⚠️  API-55PBX: Não configurada');
+    return null;
+  }
+  
   try {
+    console.log('📡 API-55PBX: Buscando ligações do dia...');
+    
+    // Define período: início do dia até agora
+    const dateStart = startOfDay(date);
+    const dateEnd = new Date();
+    
+    console.log(`   Período: ${dateStart.toLocaleString()} até ${dateEnd.toLocaleString()}`);
+    
+    // Monta a URL com path params
     const urlPath = [
       formatDateForAPI(dateStart),
       formatDateForAPI(dateEnd),
-      queue,
+      config.defaultFilters.queue,
       config.defaultFilters.number,
       config.defaultFilters.agent,
       config.defaultFilters.report,
@@ -77,103 +90,28 @@ async function fetchQueueData(dateStart, dateEnd, queue) {
       headers: getAuthHeaders(),
     });
     
-    return response.data || null;
+    const data = response.data;
     
-  } catch (error) {
-    console.error(`   ❌ Erro na fila ${queue}: ${error.message}`);
-    return null;
-  }
-}
-
-/**
- * Busca dados de ligações do dia atual (todas as filas configuradas)
- * 
- * @param {Date} date - Data de referência (padrão: hoje)
- * @returns {Promise<Object>} Dados agregados de todas as filas
- */
-export async function fetchTodayCalls(date = new Date()) {
-  if (!isConfigured()) {
-    console.warn('⚠️  API-55PBX: Não configurada');
-    return null;
-  }
-  
-  try {
-    console.log('📡 API-55PBX: Buscando ligações do dia...');
-    console.log(`   Filas: ${config.queues.join(', ')}`);
-    
-    // Define período: início do dia até agora
-    const dateStart = startOfDay(date);
-    const dateEnd = new Date();
-    
-    console.log(`   Período: ${dateStart.toLocaleString()} até ${dateEnd.toLocaleString()}`);
-    
-    // Busca cada fila e soma os resultados
-    let totalAtendidas = 0;
-    let totalAbandonadas = 0;
-    let totalRetidasURA = 0;
-    let totalWaitTime = 0;
-    let countWaitTime = 0;
-    
-    for (const queue of config.queues) {
-      console.log(`   📞 Fila: ${queue}`);
-      
-      const data = await fetchQueueData(dateStart, dateEnd, queue);
-      
-      if (data && !Array.isArray(data)) {
-        const atendidas = parseInt(data.totalCallAttendedReceptive || 0);
-        const abandonadas = parseInt(data.totalCallAbandonedQueue || 0);
-        const retidasURA = parseInt(data.totalCallAbandonedURA || 0);
-        
-        totalAtendidas += atendidas;
-        totalAbandonadas += abandonadas;
-        totalRetidasURA += retidasURA;
-        
-        // Tempo de espera
-        const waitTimeStr = data.timeMediumWaitingAttendance || '00:00:00';
-        const waitParts = waitTimeStr.split(':');
-        if (waitParts.length === 3) {
-          const waitSecs = parseInt(waitParts[0]) * 3600 + parseInt(waitParts[1]) * 60 + parseInt(waitParts[2]);
-          if (waitSecs > 0) {
-            totalWaitTime += waitSecs;
-            countWaitTime++;
-          }
-        }
-        
-        console.log(`      ✅ ${atendidas} atendidas, ${abandonadas} abandonadas`);
-      }
-      
-      // Pequeno delay entre requisições
-      await new Promise(r => setTimeout(r, 200));
+    if (!data) {
+      console.log('   Nenhum dado retornado');
+      return null;
     }
     
-    // Retorna dados agregados no mesmo formato
-    const result = {
-      totalCallAttendedReceptive: totalAtendidas,
-      totalCallAbandonedQueue: totalAbandonadas,
-      totalCallAbandonedURA: totalRetidasURA,
-      timeMediumWaitingAttendance: countWaitTime > 0 
-        ? formatSecondsToTime(Math.round(totalWaitTime / countWaitTime))
-        : '00:00:00',
-    };
+    // Se for resposta agregada, retorna direto
+    if (!Array.isArray(data)) {
+      const total = parseInt(data.totalCallAttendedReceptive || 0) + 
+                    parseInt(data.totalCallAbandonedQueue || 0) + 
+                    parseInt(data.totalCallAbandonedURA || 0);
+      console.log(`✅ API-55PBX: ${total} ligações obtidas`);
+      return data;
+    }
     
-    console.log(`✅ Total: ${totalAtendidas + totalAbandonadas + totalRetidasURA} ligações`);
-    
-    return result;
+    return data;
     
   } catch (error) {
     console.error('❌ API-55PBX: Erro ao buscar dados:', error.message);
     return null;
   }
-}
-
-/**
- * Formata segundos para HH:MM:SS
- */
-function formatSecondsToTime(seconds) {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
 /**
@@ -392,7 +330,7 @@ export async function processWebhook(callData) {
 }
 
 /**
- * Busca dados de um dia específico (todas as filas configuradas)
+ * Busca dados de um dia específico
  * @param {Date} date - Data específica para buscar
  * @returns {Promise<Object>} KPIs do dia
  */
@@ -405,30 +343,33 @@ export async function fetchDayData(date) {
     const dateStart = startOfDay(date);
     const dateEnd = endOfDay(date);
     
-    // Busca cada fila e soma os resultados
-    let totalAtendidas = 0;
-    let totalAbandonadas = 0;
-    let totalRetidasURA = 0;
+    const urlPath = [
+      formatDateForAPI(dateStart),
+      formatDateForAPI(dateEnd),
+      config.defaultFilters.queue,
+      config.defaultFilters.number,
+      config.defaultFilters.agent,
+      config.defaultFilters.report,
+      config.defaultFilters.quiz_id,
+      config.timezone,
+    ].join('/');
     
-    for (const queue of config.queues) {
-      const data = await fetchQueueData(dateStart, dateEnd, queue);
-      
-      if (data && !Array.isArray(data)) {
-        totalAtendidas += parseInt(data.totalCallAttendedReceptive || 0);
-        totalAbandonadas += parseInt(data.totalCallAbandonedQueue || 0);
-        totalRetidasURA += parseInt(data.totalCallAbandonedURA || 0);
-      }
-      
-      // Pequeno delay entre requisições
-      await new Promise(r => setTimeout(r, 100));
-    }
+    const response = await api.get(`/${urlPath}`, {
+      headers: getAuthHeaders(),
+    });
+    
+    const data = response.data;
+    
+    if (!data) return null;
     
     return {
       date: format(date, 'dd/MM/yyyy'),
-      atendidas: totalAtendidas,
-      abandonadas: totalAbandonadas,
-      retidasURA: totalRetidasURA,
-      total: totalAtendidas + totalAbandonadas + totalRetidasURA,
+      atendidas: parseInt(data.totalCallAttendedReceptive || 0),
+      abandonadas: parseInt(data.totalCallAbandonedQueue || 0),
+      retidasURA: parseInt(data.totalCallAbandonedURA || 0),
+      total: parseInt(data.totalCallAttendedReceptive || 0) + 
+             parseInt(data.totalCallAbandonedQueue || 0) + 
+             parseInt(data.totalCallAbandonedURA || 0),
     };
     
   } catch (error) {

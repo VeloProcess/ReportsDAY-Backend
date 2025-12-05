@@ -9,6 +9,28 @@ import { format, startOfDay, endOfDay, subDays } from 'date-fns';
 import { config, getAuthHeaders, isConfigured } from './config.js';
 import redisService from '../API-REDIS/service.js';
 
+// Importa websocket para logs em tempo real (lazy load para evitar circular)
+let websocket = null;
+async function getWebsocket() {
+  if (!websocket) {
+    try {
+      const ws = await import('../CORE/websocket.js');
+      websocket = ws.default;
+    } catch (e) {
+      // Ignora se não conseguir importar
+    }
+  }
+  return websocket;
+}
+
+// Envia log para o painel
+async function sendLog(message, level = 'info') {
+  const ws = await getWebsocket();
+  if (ws && ws.broadcastLog) {
+    ws.broadcastLog(message, level);
+  }
+}
+
 // Cria instância do axios
 const api = axios.create({
   baseURL: config.apiUrl,
@@ -386,6 +408,7 @@ export async function fetchDayData(date) {
  */
 export async function fetchHistoricalData(days = 15) {
   console.log(`📊 API-55PBX: Buscando histórico dos últimos ${days} dias...`);
+  await sendLog(`📊 Carregando histórico (${days} dias)...`, 'info');
   
   const historico = [];
   const hoje = new Date();
@@ -393,21 +416,21 @@ export async function fetchHistoricalData(days = 15) {
   // Busca cada dia (começa do dia anterior, não inclui hoje)
   for (let i = 1; i <= days; i++) {
     const data = subDays(hoje, i);
-    console.log(`   📅 Buscando ${format(data, 'dd/MM/yyyy')}...`);
+    console.log(`   📅 Dia ${i}/${days}: ${format(data, 'dd/MM/yyyy')}`);
     
     const dadosDia = await fetchDayData(data);
     
     if (dadosDia) {
       historico.push(dadosDia);
-      console.log(`      ✅ ${dadosDia.atendidas} atendidas`);
     }
     
     // Pequeno delay para não sobrecarregar a API
-    await new Promise(r => setTimeout(r, 500));
+    await new Promise(r => setTimeout(r, 300));
   }
   
   if (historico.length === 0) {
     console.log('   ⚠️ Nenhum dado histórico encontrado');
+    await sendLog('⚠️ Sem dados históricos', 'warning');
     return null;
   }
   
@@ -423,6 +446,7 @@ export async function fetchHistoricalData(days = 15) {
   const mediaTotal = Math.round(somaTotal / historico.length);
   
   console.log(`   📈 Média ${days} dias: ${mediaAtendidas} atendidas/dia`);
+  await sendLog(`✅ Histórico: ${historico.length} dias | Média: ${mediaAtendidas} atendidas/dia`, 'success');
   
   return {
     dias: historico.length,

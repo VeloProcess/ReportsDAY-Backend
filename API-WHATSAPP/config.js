@@ -23,8 +23,8 @@ export const config = {
     enviarRelatorioTodos: '/enviar-relatorio-todos',
   },
   
-  // Timeout para requisições (ms)
-  timeout: 30000,
+  // Timeout para requisições (ms) - 60s para acordar o Render
+  timeout: 60000,
 };
 
 /**

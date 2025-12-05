@@ -21,9 +21,14 @@ export const config = {
   // Timezone Brasil
   timezone: '-3',
   
+  // Filas específicas para filtrar (separadas por vírgula no .env)
+  queues: process.env.API_55_QUEUES 
+    ? process.env.API_55_QUEUES.split(',').map(q => q.trim())
+    : ['4961-CALCULADORA', '4961-IRPF', '4961-CREDITO__P2', '4961-CREDITO_P1'],
+  
   // Filtros padrão
   defaultFilters: {
-    queue: 'all_queues',
+    queue: 'all_queues', // Será sobrescrito pelas filas específicas
     number: 'all_numbers',
     agent: 'all_agent',
     report: 'report_01', // Relatório Macro de ligações

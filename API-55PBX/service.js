@@ -54,32 +54,18 @@ function formatDateForAPI(date) {
 }
 
 /**
- * Busca dados de ligações do dia atual
- * 
- * @param {Date} date - Data de referência (padrão: hoje)
- * @returns {Promise<Array>} Lista de ligações
+ * Busca dados de UMA fila específica
+ * @param {Date} dateStart - Data início
+ * @param {Date} dateEnd - Data fim
+ * @param {string} queue - Nome/ID da fila
+ * @returns {Promise<Object|null>} Dados da fila
  */
-export async function fetchTodayCalls(date = new Date()) {
-  if (!isConfigured()) {
-    console.warn('⚠️  API-55PBX: Não configurada');
-    return [];
-  }
-  
+async function fetchQueueData(dateStart, dateEnd, queue) {
   try {
-    console.log('📡 API-55PBX: Buscando ligações do dia...');
-    
-    // Define período: início do dia até agora
-    const dateStart = startOfDay(date);
-    const dateEnd = new Date();
-    
-    console.log(`   Período: ${dateStart.toLocaleString()} até ${dateEnd.toLocaleString()}`);
-    
-    // Monta a URL com path params
-    // Formato: /{date_start}/{date_end}/{queue}/{number}/{agent}/{report}/{quiz_id}/{timezone}
     const urlPath = [
       formatDateForAPI(dateStart),
       formatDateForAPI(dateEnd),
-      config.defaultFilters.queue,
+      queue,
       config.defaultFilters.number,
       config.defaultFilters.agent,
       config.defaultFilters.report,
@@ -87,53 +73,107 @@ export async function fetchTodayCalls(date = new Date()) {
       config.timezone,
     ].join('/');
     
-    console.log(`   URL: ${config.apiUrl}/${urlPath}`);
-    
     const response = await api.get(`/${urlPath}`, {
       headers: getAuthHeaders(),
     });
     
-    const data = response.data;
+    return response.data || null;
     
-    // Verifica se retornou dados
-    if (!data) {
-      console.log('   Nenhum dado retornado');
-      return [];
+  } catch (error) {
+    console.error(`   ❌ Erro na fila ${queue}: ${error.message}`);
+    return null;
+  }
+}
+
+/**
+ * Busca dados de ligações do dia atual (todas as filas configuradas)
+ * 
+ * @param {Date} date - Data de referência (padrão: hoje)
+ * @returns {Promise<Object>} Dados agregados de todas as filas
+ */
+export async function fetchTodayCalls(date = new Date()) {
+  if (!isConfigured()) {
+    console.warn('⚠️  API-55PBX: Não configurada');
+    return null;
+  }
+  
+  try {
+    console.log('📡 API-55PBX: Buscando ligações do dia...');
+    console.log(`   Filas: ${config.queues.join(', ')}`);
+    
+    // Define período: início do dia até agora
+    const dateStart = startOfDay(date);
+    const dateEnd = new Date();
+    
+    console.log(`   Período: ${dateStart.toLocaleString()} até ${dateEnd.toLocaleString()}`);
+    
+    // Busca cada fila e soma os resultados
+    let totalAtendidas = 0;
+    let totalAbandonadas = 0;
+    let totalRetidasURA = 0;
+    let totalWaitTime = 0;
+    let countWaitTime = 0;
+    
+    for (const queue of config.queues) {
+      console.log(`   📞 Fila: ${queue}`);
+      
+      const data = await fetchQueueData(dateStart, dateEnd, queue);
+      
+      if (data && !Array.isArray(data)) {
+        const atendidas = parseInt(data.totalCallAttendedReceptive || 0);
+        const abandonadas = parseInt(data.totalCallAbandonedQueue || 0);
+        const retidasURA = parseInt(data.totalCallAbandonedURA || 0);
+        
+        totalAtendidas += atendidas;
+        totalAbandonadas += abandonadas;
+        totalRetidasURA += retidasURA;
+        
+        // Tempo de espera
+        const waitTimeStr = data.timeMediumWaitingAttendance || '00:00:00';
+        const waitParts = waitTimeStr.split(':');
+        if (waitParts.length === 3) {
+          const waitSecs = parseInt(waitParts[0]) * 3600 + parseInt(waitParts[1]) * 60 + parseInt(waitParts[2]);
+          if (waitSecs > 0) {
+            totalWaitTime += waitSecs;
+            countWaitTime++;
+          }
+        }
+        
+        console.log(`      ✅ ${atendidas} atendidas, ${abandonadas} abandonadas`);
+      }
+      
+      // Pequeno delay entre requisições
+      await new Promise(r => setTimeout(r, 200));
     }
     
-    // Debug: descomente para ver resposta completa
-    // console.log('   📋 Resposta:', JSON.stringify(data, null, 2));
+    // Retorna dados agregados no mesmo formato
+    const result = {
+      totalCallAttendedReceptive: totalAtendidas,
+      totalCallAbandonedQueue: totalAbandonadas,
+      totalCallAbandonedURA: totalRetidasURA,
+      timeMediumWaitingAttendance: countWaitTime > 0 
+        ? formatSecondsToTime(Math.round(totalWaitTime / countWaitTime))
+        : '00:00:00',
+    };
     
-    // A resposta pode vir em diferentes formatos
-    let calls = [];
+    console.log(`✅ Total: ${totalAtendidas + totalAbandonadas + totalRetidasURA} ligações`);
     
-    if (Array.isArray(data)) {
-      calls = data;
-    } else if (data.calls) {
-      calls = data.calls;
-    } else if (data.data) {
-      calls = data.data;
-    } else if (data.result) {
-      calls = Array.isArray(data.result) ? data.result : [data.result];
-    } else {
-      // Se for um objeto único, considera como resposta agregada
-      return data;
-    }
-    
-    console.log(`✅ API-55PBX: ${calls.length} registros obtidos`);
-    
-    return calls;
+    return result;
     
   } catch (error) {
     console.error('❌ API-55PBX: Erro ao buscar dados:', error.message);
-    
-    if (error.response) {
-      console.error('   Status:', error.response.status);
-      console.error('   Data:', JSON.stringify(error.response.data).substring(0, 500));
-    }
-    
-    return [];
+    return null;
   }
+}
+
+/**
+ * Formata segundos para HH:MM:SS
+ */
+function formatSecondsToTime(seconds) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
 /**
@@ -352,7 +392,7 @@ export async function processWebhook(callData) {
 }
 
 /**
- * Busca dados de um dia específico
+ * Busca dados de um dia específico (todas as filas configuradas)
  * @param {Date} date - Data específica para buscar
  * @returns {Promise<Object>} KPIs do dia
  */
@@ -365,34 +405,30 @@ export async function fetchDayData(date) {
     const dateStart = startOfDay(date);
     const dateEnd = endOfDay(date);
     
-    const urlPath = [
-      formatDateForAPI(dateStart),
-      formatDateForAPI(dateEnd),
-      config.defaultFilters.queue,
-      config.defaultFilters.number,
-      config.defaultFilters.agent,
-      config.defaultFilters.report,
-      config.defaultFilters.quiz_id,
-      config.timezone,
-    ].join('/');
+    // Busca cada fila e soma os resultados
+    let totalAtendidas = 0;
+    let totalAbandonadas = 0;
+    let totalRetidasURA = 0;
     
-    const response = await api.get(`/${urlPath}`, {
-      headers: getAuthHeaders(),
-    });
+    for (const queue of config.queues) {
+      const data = await fetchQueueData(dateStart, dateEnd, queue);
+      
+      if (data && !Array.isArray(data)) {
+        totalAtendidas += parseInt(data.totalCallAttendedReceptive || 0);
+        totalAbandonadas += parseInt(data.totalCallAbandonedQueue || 0);
+        totalRetidasURA += parseInt(data.totalCallAbandonedURA || 0);
+      }
+      
+      // Pequeno delay entre requisições
+      await new Promise(r => setTimeout(r, 100));
+    }
     
-    const data = response.data;
-    
-    if (!data) return null;
-    
-    // Extrai apenas entrada (receptivas)
     return {
       date: format(date, 'dd/MM/yyyy'),
-      atendidas: parseInt(data.totalCallAttendedReceptive || 0),
-      abandonadas: parseInt(data.totalCallAbandonedQueue || 0),
-      retidasURA: parseInt(data.totalCallAbandonedURA || 0),
-      total: parseInt(data.totalCallAttendedReceptive || 0) + 
-             parseInt(data.totalCallAbandonedQueue || 0) + 
-             parseInt(data.totalCallAbandonedURA || 0),
+      atendidas: totalAtendidas,
+      abandonadas: totalAbandonadas,
+      retidasURA: totalRetidasURA,
+      total: totalAtendidas + totalAbandonadas + totalRetidasURA,
     };
     
   } catch (error) {

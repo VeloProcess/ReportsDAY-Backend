@@ -98,6 +98,10 @@ export async function fetchTodayCalls(date = new Date()) {
       config.timezone,
     ].join('/');
     
+    const fullUrl = `${config.apiUrl}/${urlPath}`;
+    console.log(`   🔗 URL: ${fullUrl.substring(0, 100)}...`);
+    console.log(`   🔑 Token: ${config.token ? config.token.substring(0, 20) + '...' : 'NÃO CONFIGURADO'}`);
+    
     const response = await api.get(`/${urlPath}`, {
       headers: {
         ...getAuthHeaders(),
@@ -106,6 +110,8 @@ export async function fetchTodayCalls(date = new Date()) {
       // Evita erro 417 removendo Expect header
       validateStatus: (status) => status < 500,
     });
+    
+    console.log(`   📊 Status HTTP: ${response.status}`);
     
     // Verifica status da resposta
     if (response.status >= 400) {
@@ -130,8 +136,20 @@ export async function fetchTodayCalls(date = new Date()) {
       const total = parseInt(data.totalCallAttendedReceptive || 0) + 
                     parseInt(data.totalCallAbandonedQueue || 0) + 
                     parseInt(data.totalCallAbandonedURA || 0);
+      
+      console.log(`   📋 Dados recebidos:`, {
+        atendidas: data.totalCallAttendedReceptive || 0,
+        abandonadas: data.totalCallAbandonedQueue || 0,
+        retidasURA: data.totalCallAbandonedURA || 0,
+        total: total
+      });
+      
       if (total === 0) {
         console.log('   ⚠️ API retornou dados, mas todos os valores estão zerados');
+        console.log('   💡 Possíveis causas:');
+        console.log('      - Período sem ligações');
+        console.log('      - Filtros muito restritivos');
+        console.log('      - Token expirado ou inválido');
       }
     }
     
@@ -147,8 +165,12 @@ export async function fetchTodayCalls(date = new Date()) {
     return data;
     
   } catch (error) {
-    if (error.response?.status === 417) {
-      console.error('❌ API-55PBX: Erro 417 - Expectation Failed. Verifique autenticação e formato da requisição.');
+    if (error.response) {
+      console.error(`   ❌ API-55PBX: Erro HTTP ${error.response.status}`);
+      console.error(`   📄 Resposta:`, JSON.stringify(error.response.data).substring(0, 200));
+    } else if (error.request) {
+      console.error('   ❌ API-55PBX: Sem resposta do servidor');
+      console.error('   💡 Verifique: URL da API, conexão de rede, firewall');
     } else {
       console.error('❌ API-55PBX: Erro ao buscar dados:', error.message);
     }

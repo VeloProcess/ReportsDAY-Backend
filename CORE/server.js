@@ -26,9 +26,16 @@ const app = express();
 
 // Middlewares
 app.use(cors({
-  origin: '*', // Em produção, especifique as origens permitidas
+  origin: [
+    'https://reports-day.vercel.app',
+    'https://reports-day.vercel.app/',
+    'http://localhost:8080',
+    'http://localhost:3000',
+    '*', // Permite todas as origens (pode restringir em produção)
+  ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'token'],
+  credentials: true,
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));

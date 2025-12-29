@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: reportsday-backend
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3005
+      # Adicione as outras variáveis de ambiente no painel do Render
+      # API_55_TOKEN, API_55_URL, WHATSAPP_API_URL, WHATSAPP_DESTINATION, REPORT_TIMES
+

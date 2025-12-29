@@ -18,7 +18,7 @@ const executionHistory = [];
 // Horários de disparo do relatório (configurável)
 let scheduledTimes = process.env.REPORT_TIMES 
   ? process.env.REPORT_TIMES.split(',').map(t => t.trim())
-  : ['16:00']; // Padrão: 16:00
+  : ['18:00']; // Padrão: 18:00
 
 /**
  * Inicializa os agendamentos

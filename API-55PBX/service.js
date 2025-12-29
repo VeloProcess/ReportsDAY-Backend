@@ -107,11 +107,32 @@ export async function fetchTodayCalls(date = new Date()) {
       validateStatus: (status) => status < 500,
     });
     
+    // Verifica status da resposta
+    if (response.status >= 400) {
+      console.error(`   ❌ API retornou status ${response.status}`);
+      if (response.status === 404) {
+        console.error('   ⚠️ Endpoint não encontrado - verifique a URL da API');
+      } else if (response.status === 417) {
+        console.error('   ⚠️ Erro 417 - verifique autenticação e formato da requisição');
+      }
+      return null;
+    }
+    
     const data = response.data;
     
     if (!data) {
-      console.log('   Nenhum dado retornado');
+      console.log('   ⚠️ Nenhum dado retornado pela API');
       return null;
+    }
+    
+    // Verifica se a resposta está vazia ou com valores zerados
+    if (typeof data === 'object' && !Array.isArray(data)) {
+      const total = parseInt(data.totalCallAttendedReceptive || 0) + 
+                    parseInt(data.totalCallAbandonedQueue || 0) + 
+                    parseInt(data.totalCallAbandonedURA || 0);
+      if (total === 0) {
+        console.log('   ⚠️ API retornou dados, mas todos os valores estão zerados');
+      }
     }
     
     // Se for resposta agregada, retorna direto

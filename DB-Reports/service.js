@@ -244,6 +244,50 @@ export function getStatus() {
   };
 }
 
+/**
+ * Salva os dados acumulados do dia (para uso em comparações futuras)
+ * @param {Date} date - Data de referência
+ * @param {Object} dados - Dados do dia (KPIs)
+ * @returns {Promise<boolean>} True se sucesso
+ */
+export async function saveAccumulatedData(date, dados) {
+  try {
+    await ensureDbPath();
+    const dateStr = format(date, 'yyyy-MM-dd');
+    const filePath = join(DB_PATH, `accumulated-${dateStr}.json`);
+    
+    const dataToSave = {
+      data: dateStr,
+      timestamp: new Date().toISOString(),
+      ...dados,
+    };
+    
+    await fs.writeFile(filePath, JSON.stringify(dataToSave, null, 2), 'utf-8');
+    return true;
+  } catch (error) {
+    console.error('❌ DB-Reports: Erro ao salvar dados acumulados:', error.message);
+    return false;
+  }
+}
+
+/**
+ * Carrega os dados acumulados de uma data específica
+ * @param {Date} date - Data de referência
+ * @returns {Promise<Object|null>} Dados acumulados ou null se não existir
+ */
+export async function loadAccumulatedData(date) {
+  try {
+    const dateStr = format(date, 'yyyy-MM-dd');
+    const filePath = join(DB_PATH, `accumulated-${dateStr}.json`);
+    
+    const data = await fs.readFile(filePath, 'utf-8');
+    return JSON.parse(data);
+  } catch (error) {
+    return null;
+  }
+}
+
+
 export default {
   connect,
   disconnect,
@@ -254,5 +298,7 @@ export default {
   getCacheTTL,
   clearCache,
   getStatus,
+  saveAccumulatedData,
+  loadAccumulatedData,
 };
 

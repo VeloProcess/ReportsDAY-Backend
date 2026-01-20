@@ -8,6 +8,7 @@ import cron from 'node-cron';
 import api55Service from '../API-55PBX/service.js';
 import whatsappService from '../API-WHATSAPP/service.js';
 import websocket from './websocket.js';
+import calculationLogger from './calculationLogger.js';
 
 // Armazena os jobs agendados
 const jobs = {};
@@ -16,9 +17,8 @@ const jobs = {};
 const executionHistory = [];
 
 // Horários de disparo do relatório (configurável)
-let scheduledTimes = process.env.REPORT_TIMES 
-  ? process.env.REPORT_TIMES.split(',').map(t => t.trim())
-  : ['11:00']; // Padrão: 11:00
+// FORÇA os horários corretos: 10:00, 14:00, 17:00, 19:15
+let scheduledTimes = ['10:00', '14:00', '17:00', '19:15'];
 
 /**
  * Inicializa os agendamentos
@@ -26,23 +26,37 @@ let scheduledTimes = process.env.REPORT_TIMES
 export function initScheduler() {
   console.log('⏰ Scheduler: Inicializando...');
   
+  // Horários fixos: 10:00, 14:00, 17:00, 19:15
+  const times = [
+    { time: '10:00', hour: 10, minute: 0 },
+    { time: '14:00', hour: 14, minute: 0 },
+    { time: '17:00', hour: 17, minute: 0 },
+    { time: '19:15', hour: 19, minute: 15 }
+  ];
+  
   // Agenda disparo do relatório nos horários configurados
-  scheduledTimes.forEach(time => {
-    const [hour, minute] = time.split(':');
-    const cronExpression = `${minute || '0'} ${hour} * * *`; // Diariamente no horário
+  times.forEach(({ time, hour, minute }) => {
+    const cronExpression = `${minute} ${hour} * * *`; // Diariamente no horário
     
     jobs[`report_${time}`] = cron.schedule(cronExpression, async () => {
       console.log(`⏰ Scheduler: Executando relatório agendado (${time})`);
-      await executeReport();
+      console.log(`📱 Scheduler: Enviando para TODOS os números configurados no .env`);
+      await executeReport('automatico');
+    }, {
+      scheduled: true, // Garante que o job está ativo
+      timezone: "America/Sao_Paulo" // Timezone do Brasil
     });
     
-    console.log(`   📅 Relatório agendado para ${time} diariamente`);
+    console.log(`   📅 Relatório agendado para ${time} diariamente (ATIVO)`);
   });
   
   // Atualização do D0 a cada hora cheia
   jobs['d0_update'] = cron.schedule('0 * * * *', async () => {
     console.log('⏰ Scheduler: Atualizando KPIs D0...');
     await updateD0();
+  }, {
+    scheduled: true, // Garante que o job está ativo
+    timezone: "America/Sao_Paulo" // Timezone do Brasil
   });
   
   console.log('✅ Scheduler: Agendamentos configurados');
@@ -50,9 +64,10 @@ export function initScheduler() {
 
 /**
  * Executa o envio do relatório
+ * @param {string} tipo - Tipo de acionamento ('manual' ou 'automatico')
  * @returns {Promise<Object>} Resultado da execução
  */
-export async function executeReport() {
+export async function executeReport(tipo = 'automatico') {
   const startTime = Date.now();
   
   try {
@@ -66,8 +81,34 @@ export async function executeReport() {
     websocket.broadcastLog('Buscando análise histórica (15 dias)...', 'info');
     const analise = await api55Service.analisarDiaAtual();
     
+    // Log detalhado da análise
+    console.log('📊 Análise recebida:', {
+      existe: !!analise,
+      temAnalise: !!(analise && analise.analise),
+      temEscalonada: !!(analise && analise.escalonada),
+      escalonadaKeys: analise && analise.escalonada ? Object.keys(analise.escalonada) : null
+    });
+    
+    if (!analise) {
+      websocket.broadcastLog('⚠️ Análise histórica não disponível, enviando apenas KPIs do dia', 'warning');
+      console.log('⚠️ Análise é null - não será possível mostrar comparativo');
+    } else if (!analise.escalonada) {
+      websocket.broadcastLog('⚠️ Análise escalonada não disponível, enviando apenas KPIs do dia', 'warning');
+      console.log('⚠️ Análise escalonada é null - não será possível mostrar comparativo');
+    } else {
+      console.log('✅ Análise escalonada disponível - será usado formato completo com comparativo');
+    }
+    
     // 3. Envia via WhatsApp (passa os KPIs + análise)
+    // ⚠️ IMPORTANTE: sendRelatorio já envia para TODOS os números do .env automaticamente
+    console.log('📱 Iniciando envio via WhatsApp...');
+    console.log('📱 Enviando para TODOS os números configurados no WHATSAPP_DESTINATION');
+    websocket.broadcastLog('Enviando relatório via WhatsApp...', 'info');
     const result = await whatsappService.sendRelatorio(kpis, analise);
+    console.log('📱 Resultado do envio:', result);
+    if (result.enviados !== undefined) {
+      console.log(`📱 ✅ Enviado para ${result.enviados} de ${result.total} número(s)`);
+    }
     
     const elapsed = Date.now() - startTime;
     
@@ -83,6 +124,23 @@ export async function executeReport() {
     
     addToHistory(execution);
     
+    // 5. Salva JSON com cálculos utilizados
+    try {
+      const jsonPath = await calculationLogger.logCalculation({
+        tipo: tipo,
+        kpis: kpis,
+        analise: analise,
+        result: result,
+        duration: elapsed,
+      });
+      if (jsonPath) {
+        websocket.broadcastLog(`📄 Cálculos salvos em: ${jsonPath}`, 'info');
+      }
+    } catch (logError) {
+      console.error('⚠️ Erro ao salvar JSON de cálculo:', logError.message);
+      // Não interrompe o fluxo principal
+    }
+    
     if (result.success) {
       websocket.broadcastLog(`Relatório enviado com sucesso! (${elapsed}ms)`, 'success');
       websocket.broadcast({ type: 'execution_complete', payload: execution });
@@ -94,14 +152,29 @@ export async function executeReport() {
     return execution;
     
   } catch (error) {
+    const elapsed = Date.now() - startTime;
     const execution = {
       timestamp: new Date().toISOString(),
       success: false,
       error: error.message,
-      duration: Date.now() - startTime,
+      duration: elapsed,
     };
     
     addToHistory(execution);
+    
+    // Tenta salvar JSON mesmo em caso de erro (com dados parciais)
+    try {
+      await calculationLogger.logCalculation({
+        tipo: tipo,
+        kpis: null,
+        analise: null,
+        result: { success: false, error: error.message },
+        duration: elapsed,
+      });
+    } catch (logError) {
+      // Ignora erro de log
+    }
+    
     websocket.broadcastLog(`Erro na execução: ${error.message}`, 'error');
     websocket.broadcast({ type: 'execution_error', payload: execution });
     
@@ -149,24 +222,36 @@ export function getHistory() {
  */
 export function getNextRun() {
   const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   
-  // Encontra o próximo horário
-  for (const time of scheduledTimes.sort()) {
-    const [hour, minute] = time.split(':').map(Number);
-    const scheduled = new Date(today);
-    scheduled.setHours(hour, minute || 0, 0, 0);
-    
-    if (scheduled > now) {
+  // Cria data de hoje às 00:00:00
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+  
+  // Horários fixos: 10:00, 14:00, 17:00, 19:15
+  const times = [
+    { hour: 10, minute: 0 },
+    { hour: 14, minute: 0 },
+    { hour: 17, minute: 0 },
+    { hour: 19, minute: 15 }
+  ];
+  
+  // Pega hora e minuto atual
+  const currentHour = now.getHours();
+  const currentMinute = now.getMinutes();
+  
+  // Encontra o próximo horário de hoje
+  for (const { hour, minute } of times) {
+    // Compara diretamente hora e minuto
+    if (hour > currentHour || (hour === currentHour && minute > currentMinute)) {
+      const scheduled = new Date(today);
+      scheduled.setHours(hour, minute, 0, 0);
       return scheduled;
     }
   }
   
-  // Se todos já passaram, retorna o primeiro de amanhã
+  // Se todos já passaram, retorna o primeiro de amanhã (10:00)
   const tomorrow = new Date(today);
   tomorrow.setDate(tomorrow.getDate() + 1);
-  const [hour, minute] = scheduledTimes[0].split(':').map(Number);
-  tomorrow.setHours(hour, minute || 0, 0, 0);
+  tomorrow.setHours(10, 0, 0, 0);
   
   return tomorrow;
 }

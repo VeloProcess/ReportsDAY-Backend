@@ -111,11 +111,43 @@ router.get('/api/status', async (req, res) => {
  */
 router.get('/api/report/d0', async (req, res) => {
   try {
+    const agora = new Date();
+    console.log('📊 API D0: Iniciando cálculo de KPIs...');
+    console.log(`📊 API D0: Data/Hora atual: ${agora.toISOString()} (${agora.toLocaleString('pt-BR')})`);
+    
     const kpis = await api55Service.calculateDayKPIs();
-    res.json(kpis);
+    
+    console.log('📊 API D0: KPIs calculados:', JSON.stringify(kpis, null, 2));
+    
+    // ⚠️ LOG CRÍTICO: Se estiver zerado
+    if (kpis.totalCalls === 0 && kpis.answered === 0 && kpis.abandoned === 0) {
+      console.error('⚠️ ⚠️ ⚠️ API D0: ATENÇÃO - KPIs estão ZERADOS!');
+      console.error('⚠️ Isso pode indicar que:');
+      console.error('   1. A API não retornou dados');
+      console.error('   2. Os dados não foram extraídos corretamente');
+      console.error('   3. A função retornou null e foi convertida para zerado');
+    }
+    
+    res.json({
+      ...kpis,
+      _debug: {
+        timestamp: new Date().toISOString(),
+        source: 'calculateDayKPIs',
+        hasData: !!(kpis.totalCalls || kpis.answered || kpis.abandoned),
+        dataAtual: agora.toISOString(),
+        warning: (kpis.totalCalls === 0 && kpis.answered === 0 && kpis.abandoned === 0) ? 'KPIs zerados - verifique logs do backend' : null,
+      }
+    });
   } catch (error) {
     console.error('❌ API D0: Erro:', error.message);
-    res.status(500).json({ error: error.message });
+    console.error('❌ API D0: Stack:', error.stack);
+    res.status(500).json({ 
+      error: error.message,
+      _debug: {
+        timestamp: new Date().toISOString(),
+        error: true,
+      }
+    });
   }
 });
 
@@ -179,7 +211,8 @@ router.post('/api/trigger', async (req, res) => {
     websocket.broadcastLog('Disparo manual solicitado', 'event');
     
     // Executa em background para não bloquear a resposta
-    scheduler.executeReport().catch(err => {
+    // Passa 'manual' como tipo de acionamento
+    scheduler.executeReport('manual').catch(err => {
       console.error('Trigger: Erro na execução:', err.message);
     });
     

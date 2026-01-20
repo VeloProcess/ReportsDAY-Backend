@@ -6,6 +6,18 @@
 
 import axios from 'axios';
 import { config, isConfigured } from './config.js';
+import { formatRelatorioFinal } from '../API-55PBX/service.js';
+import websocket from '../CORE/websocket.js';
+
+/**
+ * Função auxiliar para arredondamento consistente
+ * Sempre arredonda para o inteiro mais próximo (0.5 arredonda para cima)
+ * @param {number} value - Valor a arredondar
+ * @returns {number} Valor arredondado
+ */
+function roundConsistent(value) {
+  return Math.round(value);
+}
 
 // Cria instância do axios
 const api = axios.create({
@@ -24,22 +36,74 @@ const api = axios.create({
  * @returns {Promise<Object>} Resultado do envio
  */
 export async function sendMessage(mensagem, numero = null) {
-  const targetNumber = numero || config.destination;
+  let targetNumber = numero || config.destination;
+  
+  // Remove espaços e vírgulas do número
+  if (targetNumber) {
+    targetNumber = targetNumber.toString().trim().replace(/,/g, '').replace(/\s/g, '');
+  }
   
   if (!isConfigured()) {
     console.warn('⚠️  WhatsApp: API não configurada');
+    websocket.broadcastLog('⚠️ WhatsApp: API não configurada', 'error');
     return { success: false, error: 'API não configurada' };
   }
   
+  if (!targetNumber) {
+    console.error('❌ WhatsApp: Número de destino não fornecido');
+    websocket.broadcastLog('❌ Número de destino não fornecido', 'error');
+    return { success: false, error: 'Número de destino não fornecido' };
+  }
+  
+  // Valida formato do número (deve ter pelo menos 10 dígitos)
+  if (targetNumber.length < 10) {
+    console.error(`❌ WhatsApp: Número inválido: ${targetNumber}`);
+    websocket.broadcastLog(`❌ Número inválido: ${targetNumber}`, 'error');
+    return { success: false, error: `Número inválido: ${targetNumber}` };
+  }
+  
+  const payload = {
+    numero: targetNumber,
+    mensagem: mensagem,
+  };
+  
   try {
     console.log(`📱 WhatsApp: Enviando mensagem para ${targetNumber}...`);
+    console.log(`📱 Endpoint: ${config.apiUrl}${config.endpoints.enviar}`);
+    console.log(`📱 Timeout configurado: ${config.timeout}ms`);
+    console.log(`📱 Payload:`, JSON.stringify(payload, null, 2));
+    websocket.broadcastLog(`📱 Enviando para ${targetNumber}...`, 'info');
     
-    const response = await api.post(config.endpoints.enviar, {
-      numero: targetNumber,
-      mensagem: mensagem,
-    });
+    const requestStartTime = Date.now();
+    const response = await api.post(config.endpoints.enviar, payload);
+    const requestElapsed = Date.now() - requestStartTime;
+    
+    console.log(`✅ WhatsApp: Resposta recebida (${requestElapsed}ms)`);
+    console.log(`✅ Response status: ${response.status}`);
+    console.log(`✅ Response data:`, JSON.stringify(response.data, null, 2));
+    websocket.broadcastLog(`✅ Resposta recebida (${requestElapsed}ms)`, 'success');
+    
+    // Valida a resposta da API
+    if (response.data) {
+      // Verifica se a API retornou sucesso real
+      // A API pode retornar {sucesso: true} ou {success: true}
+      const apiSuccess = response.data.sucesso === true || response.data.success === true;
+      const apiError = response.data.error || response.data.erro || response.data.message;
+      
+      if (!apiSuccess || apiError) {
+        const errorMsg = apiError || 'API retornou erro';
+        console.error('⚠️ API retornou erro na resposta:', errorMsg);
+        websocket.broadcastLog(`⚠️ API retornou erro: ${errorMsg}`, 'error');
+        return {
+          success: false,
+          error: errorMsg,
+          data: response.data,
+        };
+      }
+    }
     
     console.log('✅ WhatsApp: Mensagem enviada com sucesso!');
+    websocket.broadcastLog('✅ Mensagem enviada com sucesso!', 'success');
     
     return {
       success: true,
@@ -47,27 +111,63 @@ export async function sendMessage(mensagem, numero = null) {
     };
     
   } catch (error) {
-    console.error('❌ WhatsApp: Erro ao enviar:', error.message);
+    const errorType = error.code || 'UNKNOWN';
+    console.error(`❌ WhatsApp: Erro ao enviar (${errorType}):`, error.message);
+    websocket.broadcastLog(`❌ Erro (${errorType}): ${error.message}`, 'error');
+    
+    if (error.code === 'ECONNABORTED') {
+      console.error('   ⏱️ Timeout: A requisição excedeu o tempo limite');
+      websocket.broadcastLog('⏱️ Timeout: Requisição excedeu o tempo limite', 'error');
+    }
+    
+    let errorMessage = error.message;
+    let errorDetails = null;
     
     if (error.response) {
-      console.error('   Status:', error.response.status);
-      console.error('   Data:', JSON.stringify(error.response.data));
+      const status = error.response.status;
+      const statusText = error.response.statusText || '';
+      const responseData = error.response.data || {};
+      
+      console.error(`   Status: ${status} ${statusText}`);
+      console.error(`   Data da resposta:`, JSON.stringify(responseData, null, 2));
+      websocket.broadcastLog(`   Status: ${status} ${statusText}`, 'error');
+      
+      // Tenta extrair mensagem de erro mais específica da resposta
+      if (responseData.error || responseData.erro || responseData.message) {
+        errorMessage = responseData.error || responseData.erro || responseData.message;
+        console.error(`   Mensagem de erro da API: ${errorMessage}`);
+        websocket.broadcastLog(`   Erro da API: ${errorMessage}`, 'error');
+      }
+      
+      errorDetails = {
+        status,
+        statusText,
+        data: responseData,
+      };
+    } else if (error.request) {
+      console.error('   ⚠️ Sem resposta do servidor');
+      websocket.broadcastLog('⚠️ Sem resposta do servidor', 'error');
     }
     
     return {
       success: false,
-      error: error.message,
+      error: errorMessage,
+      details: errorDetails,
     };
   }
 }
 
 /**
- * Envia o relatório formatado para o número configurado
+ * Envia o relatório formatado para TODOS os números configurados no .env
  * Usa o endpoint /enviar-relatorio com o formato correto
+ * 
+ * ⚠️ IMPORTANTE: Esta função envia para TODOS os números configurados em WHATSAPP_DESTINATION
+ * Para configurar múltiplos números, separe-os por vírgula no .env:
+ * WHATSAPP_DESTINATION=5511922048764,5511999999999,5511888888888
  * 
  * @param {Object} kpis - KPIs calculados do dia
  * @param {Object} analise - Análise histórica (opcional)
- * @returns {Promise<Object>} Resultado do envio
+ * @returns {Promise<Object>} Resultado do envio com contagem de sucessos e falhas
  */
 export async function sendRelatorio(kpis, analise = null) {
   if (!isConfigured()) {
@@ -75,148 +175,104 @@ export async function sendRelatorio(kpis, analise = null) {
     return { success: false, error: 'API não configurada' };
   }
   
-  // Se houver múltiplos números, envia para todos
-  if (config.destinations.length > 1) {
-    return await sendRelatorioMultiplos(kpis, analise);
+  // ⚠️ IMPORTANTE: Sempre usa o array destinations para enviar para todos os números configurados
+  // Isso garante que múltiplos números no .env sejam processados corretamente
+  if (config.destinations.length === 0) {
+    console.error('❌ WhatsApp: Nenhum número de destino configurado');
+    websocket.broadcastLog('❌ Nenhum número de destino configurado', 'error');
+    return { success: false, error: 'Nenhum número de destino configurado' };
   }
   
-  // Envia para um único número (comportamento original)
-  const numero = config.destination;
-  const jid = `${numero}@s.whatsapp.net`;
-  
-  // Determina o período (Manhã ou Tarde)
-  const hora = new Date().getHours();
-  const periodo = hora < 12 ? 'Manhã' : 'Tarde';
-  
-  // Formata a data
-  const now = new Date();
-  const data = now.toLocaleDateString('pt-BR'); // DD/MM/AAAA
-  
-  // Monta o payload no formato esperado pela API
-  const payload = {
-    jid: jid,
-    numero: numero,
-    dadosRelatorio: {
-      ligacoesRecebidas: kpis.totalCalls || 0,
-      ligacoesAtendidas: kpis.answered || 0,
-      ligacoesAbandonadas: kpis.abandoned || 0,
-      periodo: periodo,
-      data: data,
-      filas: kpis.peakHour ? [
-        {
-          momento: kpis.peakHour.hour || '00:00',
-          quantidadePessoas: kpis.peakHour.count || 0,
-        }
-      ] : [],
-    },
-  };
-  
-  try {
-    console.log(`📊 WhatsApp: Enviando relatório para ${numero}...`);
-    console.log('   Payload:', JSON.stringify(payload, null, 2));
-    
-    const response = await api.post(config.endpoints.enviarRelatorio, payload);
-    
-    console.log('✅ WhatsApp: Relatório enviado com sucesso!');
-    
-    // Se tiver análise histórica, envia mensagem complementar
-    if (analise && analise.analise) {
-      await sendAnaliseHistorica(analise, numero);
-    }
-    
-    return {
-      success: true,
-      data: response.data,
-    };
-    
-  } catch (error) {
-    console.error('❌ WhatsApp: Erro ao enviar relatório:', error.message);
-    
-    if (error.response) {
-      console.error('   Status:', error.response.status);
-      console.error('   Data:', JSON.stringify(error.response.data));
-    }
-    
-    return {
-      success: false,
-      error: error.message,
-    };
-  }
+  // Sempre usa a função de múltiplos (funciona para 1 ou mais números)
+  // Isso garante consistência e suporte a múltiplos números do .env
+  // ⚠️ CRÍTICO: Esta função envia para TODOS os números configurados no WHATSAPP_DESTINATION
+  console.log(`📱 sendRelatorio: Enviando para ${config.destinations.length} número(s) configurado(s)`);
+  return await sendRelatorioMultiplos(kpis, analise);
 }
 
 /**
- * Envia relatório para múltiplos números
+ * Envia relatório para múltiplos números configurados no .env
+ * ⚠️ Esta função itera sobre TODOS os números em config.destinations
+ * 
  * @param {Object} kpis - KPIs calculados
  * @param {Object} analise - Análise histórica (opcional)
- * @returns {Promise<Object>} Resultado do envio
+ * @returns {Promise<Object>} Resultado do envio com detalhes de cada número
  */
 async function sendRelatorioMultiplos(kpis, analise = null) {
   const resultados = [];
   let sucessos = 0;
   let falhas = 0;
   
-  console.log(`📊 WhatsApp: Enviando relatório para ${config.destinations.length} números...`);
+  const quantidadeNumeros = config.destinations.length;
+  console.log(`\n📊 ═══════════════════════════════════════════════════════`);
+  console.log(`📊 WhatsApp: Enviando relatório para ${quantidadeNumeros} número(s)...`);
+  console.log(`📋 Números configurados no .env: ${config.destinations.join(', ')}`);
+  console.log(`📊 ═══════════════════════════════════════════════════════\n`);
+  websocket.broadcastLog(`📊 Enviando para ${quantidadeNumeros} número(s)...`, 'info');
+  
+  // Formata a mensagem combinada uma vez para todos
+  let mensagemFormatada;
+  try {
+    mensagemFormatada = formatRelatorioCompleto(kpis, analise);
+    console.log(`📝 Mensagem formatada (${mensagemFormatada.length} caracteres)`);
+    websocket.broadcastLog(`📝 Mensagem formatada (${mensagemFormatada.length} caracteres)`, 'info');
+  } catch (formatError) {
+    console.error('❌ Erro ao formatar mensagem:', formatError.message);
+    websocket.broadcastLog(`❌ Erro ao formatar mensagem: ${formatError.message}`, 'error');
+    return {
+      success: false,
+      error: `Erro ao formatar mensagem: ${formatError.message}`,
+    };
+  }
   
   for (const numero of config.destinations) {
     try {
-      const jid = `${numero}@s.whatsapp.net`;
-      
-      // Determina o período (Manhã ou Tarde)
-      const hora = new Date().getHours();
-      const periodo = hora < 12 ? 'Manhã' : 'Tarde';
-      
-      // Formata a data
-      const now = new Date();
-      const data = now.toLocaleDateString('pt-BR');
-      
-      // Monta o payload
-      const payload = {
-        jid: jid,
-        numero: numero,
-        dadosRelatorio: {
-          ligacoesRecebidas: kpis.totalCalls || 0,
-          ligacoesAtendidas: kpis.answered || 0,
-          ligacoesAbandonadas: kpis.abandoned || 0,
-          periodo: periodo,
-          data: data,
-          filas: kpis.peakHour ? [
-            {
-              momento: kpis.peakHour.hour || '00:00',
-              quantidadePessoas: kpis.peakHour.count || 0,
-            }
-          ] : [],
-        },
-      };
-      
       console.log(`   📱 Enviando para ${numero}...`);
+      websocket.broadcastLog(`📱 Enviando para ${numero}...`, 'info');
       
-      const response = await api.post(config.endpoints.enviarRelatorio, payload);
+      // Envia mensagem já formatada usando o endpoint /enviar
+      const result = await sendMessage(mensagemFormatada, numero);
       
-      console.log(`   ✅ Enviado com sucesso para ${numero}`);
-      sucessos++;
-      resultados.push({ numero, success: true });
-      
-      // Envia análise histórica para este número
-      if (analise && analise.analise) {
-        await sendAnaliseHistorica(analise, numero);
+      if (result.success) {
+        console.log(`   ✅ Enviado com sucesso para ${numero}`);
+        websocket.broadcastLog(`✅ Enviado para ${numero}`, 'success');
+        sucessos++;
+        resultados.push({ numero, success: true });
+      } else {
+        throw new Error(result.error || 'Erro ao enviar');
       }
       
-      // Pequeno delay entre envios para não sobrecarregar
+      // Pequeno delay entre envios para não sobrecarregar a API
+      if (config.destinations.length > 1) {
       await new Promise(r => setTimeout(r, 500));
+      }
       
     } catch (error) {
       console.error(`   ❌ Erro ao enviar para ${numero}:`, error.message);
+      websocket.broadcastLog(`❌ Erro ao enviar para ${numero}: ${error.message}`, 'error');
       falhas++;
       resultados.push({ numero, success: false, error: error.message });
     }
   }
   
-  console.log(`📊 Resumo: ${sucessos} sucessos, ${falhas} falhas`);
+  console.log(`\n📊 ═══════════════════════════════════════════════════════`);
+  console.log(`📊 RESUMO DO ENVIO:`);
+  console.log(`📊   ✅ Sucessos: ${sucessos} de ${quantidadeNumeros}`);
+  console.log(`📊   ❌ Falhas: ${falhas} de ${quantidadeNumeros}`);
+  if (sucessos > 0) {
+    console.log(`📊   📱 Números que receberam: ${resultados.filter(r => r.success).map(r => r.numero).join(', ')}`);
+  }
+  if (falhas > 0) {
+    console.log(`📊   ⚠️ Números com erro: ${resultados.filter(r => !r.success).map(r => `${r.numero} (${r.error})`).join(', ')}`);
+  }
+  console.log(`📊 ═══════════════════════════════════════════════════════\n`);
+  websocket.broadcastLog(`📊 Resumo: ${sucessos} sucesso(s), ${falhas} falha(s)`, falhas === 0 ? 'success' : 'warning');
   
   return {
     success: falhas === 0,
     enviados: sucessos,
     falhas: falhas,
+    total: quantidadeNumeros,
     resultados: resultados,
   };
 }
@@ -232,53 +288,10 @@ async function sendAnaliseHistorica(analise, numero = null) {
     return { success: false, error: 'Sem dados de análise' };
   }
   
-  const { hoje, historico, analise: niveis } = analise;
-  
-  // Monta a mensagem de análise
-  const totalAnalise = niveis.total;
-  const emoji = totalAnalise.emoji || '📊';
-  const nivel = totalAnalise.nivel || 'Indefinido';
-  const percentual = totalAnalise.percentual || 0;
-  
-  // Texto da mensagem
-  const mensagem = `${emoji} *Média da operação: ${nivel}*
-comparado com os últimos 15 dias
-
-📊 *Análise Detalhada:*
-━━━━━━━━━━━━━━━━━━━━━━━━
-
-✅ Atendidas: ${hoje.answered} (média: ${historico.medias.atendidas})
-   ${niveis.atendidas.emoji} ${niveis.atendidas.percentual}% do esperado
-
-📵 Abandonadas: ${hoje.abandoned} (média: ${historico.medias.abandonadas})
-   ${niveis.abandonadas.emoji} ${niveis.abandonadas.percentual}% do esperado
-
-🔄 Retidas URA: ${hoje.retainedURA} (média: ${historico.medias.retidasURA})
-   ${niveis.retidasURA.emoji} ${niveis.retidasURA.percentual}% do esperado
-
-━━━━━━━━━━━━━━━━━━━━━━━━
-📈 *Volume total: ${percentual}% da média*
-_Baseado nos últimos ${historico.dias} dias úteis_`;
-
-  try {
-    const targetNumber = numero || config.destination;
-    console.log(`📈 WhatsApp: Enviando análise histórica para ${targetNumber}...`);
-    
-    // Pequeno delay para não enviar junto
-    await new Promise(r => setTimeout(r, 2000));
-    
-    const result = await sendMessage(mensagem, targetNumber);
-    
-    if (result.success) {
-      console.log(`✅ WhatsApp: Análise histórica enviada para ${targetNumber}!`);
-    }
-    
-    return result;
-    
-  } catch (error) {
-    console.error('❌ WhatsApp: Erro ao enviar análise:', error.message);
-    return { success: false, error: error.message };
-  }
+  // A análise já está no formato correto, não precisa mais enviar separadamente
+  // O relatório completo já inclui a análise
+  // Esta função é mantida para compatibilidade mas não é mais usada
+  return { success: true, message: 'Análise incluída no relatório principal' };
 }
 
 /**
@@ -289,17 +302,17 @@ _Baseado nos últimos ${historico.dias} dias úteis_`;
  * @returns {Promise<Object>} Resultado do envio
  */
 export async function sendRelatorioTodos(kpis) {
-  const hora = new Date().getHours();
-  const periodo = hora < 12 ? 'Manhã' : 'Tarde';
-  const data = new Date().toLocaleDateString('pt-BR');
+  const now = new Date();
+  const data = now.toLocaleDateString('pt-BR');
+  const horario = now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
   
   const payload = {
     dadosRelatorio: {
       ligacoesRecebidas: kpis.totalCalls || 0,
       ligacoesAtendidas: kpis.answered || 0,
       ligacoesAbandonadas: kpis.abandoned || 0,
-      periodo: periodo,
       data: data,
+      horario: horario,
       filas: kpis.peakHour ? [
         {
           momento: kpis.peakHour.hour || '00:00',
@@ -386,41 +399,88 @@ export async function getGrupos() {
  */
 export function formatD0Report(kpis) {
   const now = new Date();
-  const dateStr = now.toLocaleDateString('pt-BR', { 
-    weekday: 'long', 
-    day: '2-digit', 
-    month: 'long', 
-    year: 'numeric' 
-  });
-  const timeStr = now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  const data = now.toLocaleDateString('pt-BR'); // DD/MM/AAAA
+  const horario = now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }); // HH:MM
   
   const total = kpis.totalCalls || 0;
-  const answeredPct = total > 0 ? Math.round((kpis.answered / total) * 100) : 0;
-  const abandonedPct = total > 0 ? Math.round((kpis.abandoned / total) * 100) : 0;
+  const answeredPct = total > 0 ? roundConsistent((kpis.answered / total) * 100) : 0;
+  const abandonedPct = total > 0 ? roundConsistent((kpis.abandoned / total) * 100) : 0;
   
-  const rateEmoji = answeredPct >= 80 ? '🟢' : answeredPct >= 60 ? '🟡' : '🔴';
-  
-  return `📊 *RELATÓRIO D0 - 55SYSTEM*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  return `📊 *Relatório D0 - ${data} ${horario}*
 
-📅 *${dateStr}*
-🕐 Gerado às ${timeStr}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📞 *RESUMO DO DIA*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-📈 Total de Ligações: *${total}*
-
+Total: *${total}* ligações
 ✅ Atendidas: *${kpis.answered || 0}* (${answeredPct}%)
 📵 Abandonadas: *${kpis.abandoned || 0}* (${abandonedPct}%)
+${kpis.avgWaitTime ? `⏱️ Espera média: *${kpis.avgWaitTime}s*` : ''}
+${kpis.peakHour ? `🕐 Pico: *${kpis.peakHour.hour}* (${kpis.peakHour.count})` : ''}`;
+}
 
-${rateEmoji} Taxa de Atendimento: *${answeredPct}%*
+/**
+ * Formata relatório completo combinando D0 + análise histórica
+ * Usa a nova função formatRelatorioFinal do service.js
+ * @param {Object} kpis - KPIs calculados
+ * @param {Object} analise - Análise histórica (opcional)
+ * @returns {string} Mensagem formatada completa
+ */
+export function formatRelatorioCompleto(kpis, analise = null) {
+  // Log para debug
+  console.log(`   🔍 formatRelatorioCompleto: Verificando análise...`);
+  console.log(`      analise existe: ${!!analise}`);
+  console.log(`      analise.analise existe: ${!!(analise && analise.analise)}`);
+  console.log(`      analise.escalonada existe: ${!!(analise && analise.escalonada)}`);
+  
+  if (analise) {
+    console.log(`      Estrutura da análise:`, {
+      temAnalise: !!analise.analise,
+      temEscalonada: !!analise.escalonada,
+      escalonadaKeys: analise.escalonada ? Object.keys(analise.escalonada) : null
+    });
+  }
+  
+  // Se tiver análise escalonada, usa a nova função formatRelatorioFinal
+  // Passa o objeto analise completo para ter acesso a escalonada
+  if (analise && analise.analise && analise.escalonada) {
+    console.log(`   ✅ Usando formatRelatorioFinal (formato completo com comparativo)`);
+    try {
+      const relatorio = formatRelatorioFinal(kpis, analise);
+      console.log(`   ✅ Relatório formatado com sucesso (${relatorio.length} caracteres)`);
+      return relatorio;
+    } catch (error) {
+      console.error(`   ❌ Erro ao formatar relatório completo:`, error.message);
+      console.error(`   ⚠️ Usando formato básico como fallback`);
+    }
+  } else {
+    console.log(`   ⚠️ Análise escalonada não disponível, usando formato básico`);
+    if (analise && !analise.escalonada) {
+      console.log(`   ⚠️ Motivo: analise.escalonada está null/undefined`);
+    }
+    if (analise && !analise.analise) {
+      console.log(`   ⚠️ Motivo: analise.analise está null/undefined`);
+    }
+    if (!analise) {
+      console.log(`   ⚠️ Motivo: analise não foi fornecida`);
+    }
+  }
+  
+  // Caso contrário, formata apenas o D0 (compatibilidade)
+  const now = new Date();
+  const data = now.toLocaleDateString('pt-BR');
+  const horario = now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  
+  const total = kpis.totalCalls || 0;
+  const answeredPct = total > 0 ? roundConsistent((kpis.answered / total) * 100) : 0;
+  const abandonedPct = total > 0 ? roundConsistent((kpis.abandoned / total) * 100) : 0;
+  
+  // Sempre mostra avgWaitTime (mesmo que seja 0)
+  const avgWaitTime = kpis.avgWaitTime !== undefined && kpis.avgWaitTime !== null ? kpis.avgWaitTime : 0;
+  
+  return `📊 *Relatório D0 - ${data} ${horario}*
 
-${kpis.peakHour ? `🕐 Horário de Pico: *${kpis.peakHour.hour}* (${kpis.peakHour.count} lig.)` : ''}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-_55SYSTEM | ReportsDAY_`;
+Total: *${total}* ligações
+✅ Atendidas: *${kpis.answered || 0}* (${answeredPct}%)
+📵 Abandonadas: *${kpis.abandoned || 0}* (${abandonedPct}%)
+⏱️ Espera média: *${avgWaitTime}s*
+${kpis.peakHour ? `🕐 Pico: *${kpis.peakHour.hour}* (${kpis.peakHour.count})` : ''}`;
 }
 
 export default {
@@ -430,5 +490,6 @@ export default {
   getStatus,
   getGrupos,
   formatD0Report,
+  formatRelatorioCompleto,
   isConfigured,
 };

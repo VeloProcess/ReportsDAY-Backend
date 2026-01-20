@@ -16,6 +16,7 @@ export const config = {
   destination: process.env.WHATSAPP_DESTINATION || '',
   
   // Lista de números de destino (parseada de WHATSAPP_DESTINATION)
+  // ⚠️ IMPORTANTE: Envia para TODOS os números configurados (separados por vírgula)
   destinations: process.env.WHATSAPP_DESTINATION 
     ? process.env.WHATSAPP_DESTINATION.split(',').map(n => n.trim()).filter(n => n)
     : [],
@@ -29,9 +30,17 @@ export const config = {
     enviarRelatorioTodos: '/enviar-relatorio-todos',
   },
   
-  // Timeout para requisições (ms) - 60s para acordar o Render
-  timeout: 60000,
+  // Timeout para requisições (ms) - 120s para dar tempo suficiente para API responder
+  timeout: 120000,
 };
+
+// ⚠️ LOG: Mostra quantos números foram carregados do .env
+if (config.destinations.length > 0) {
+  console.log(`📱 WhatsApp: ${config.destinations.length} número(s) configurado(s): ${config.destinations.join(', ')}`);
+  console.log(`📱 ⚠️ IMPORTANTE: Relatórios serão enviados para TODOS os números configurados`);
+} else {
+  console.warn('⚠️ WhatsApp: Nenhum número configurado no WHATSAPP_DESTINATION');
+}
 
 /**
  * Verifica se a API está configurada

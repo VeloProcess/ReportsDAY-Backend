@@ -13,7 +13,10 @@ WHATSAPP_API_URL=http://sua-api-baileys:porta
 # Token de autenticação (se necessário)
 WHATSAPP_API_TOKEN=seu_token
 
-# Número de destino padrão para relatórios
+# Número(s) de destino para relatórios
+# ⚠️ IMPORTANTE: Relatórios serão enviados para TODOS os números configurados
+# Formato para um número: 5511999999999
+# Formato para múltiplos números (separados por vírgula): 5511999999999,5511888888888,5511777777777
 WHATSAPP_DESTINATION=5511999999999
 
 # Instance/Session name (se aplicável)

@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: reporttoday-backend
+    name: reportsday-backend
     env: node
     region: sao-paulo
     plan: free
@@ -11,13 +11,12 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      - key: PORT
-        value: 3005
       # IMPORTANTE: Adicione as outras variáveis de ambiente no painel do Render:
-      # API_55_TOKEN=46a5e4fe-5e16-4131-8bda-d845f2fa2392-2025122946145
+      # API_55_TOKEN=seu_token_55pbx_aqui
       # API_55_URL=https://reportapi02.55pbx.com:50500/api/pbx/reports/metrics
-      # API_55_USERNAME=Gabriel_Validação Ligações
+      # API_55_USERNAME=Gabriel_Validação Ligações (opcional)
       # WHATSAPP_API_URL=https://baileys-api-relat-rios.onrender.com
-      # WHATSAPP_DESTINATION=5511922048764
-      # REPORT_TIMES=18:00
+      # WHATSAPP_DESTINATION=5511922048764 (ou múltiplos separados por vírgula)
+      # REPORT_TIMES=10:00,14:00,17:00,19:15
+      # PORT será definido automaticamente pelo Render
 

@@ -218,15 +218,24 @@ export function getHistory() {
 
 /**
  * Retorna o próximo horário de disparo
+ * ⚠️ IMPORTANTE: Usa timezone America/Sao_Paulo para calcular corretamente
  * @returns {Date|null} Próximo disparo
  */
 export function getNextRun() {
+  // ⚠️ CRÍTICO: Converte para timezone do Brasil (America/Sao_Paulo)
+  // O Render roda em UTC, então precisamos converter para horário de Brasília
   const now = new Date();
   
-  // Cria data de hoje às 00:00:00
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+  // Converte para horário de Brasília
+  // UTC-3 (horário de Brasília)
+  const brasiliaOffset = -3 * 60; // -180 minutos
+  const utcTime = now.getTime() + (now.getTimezoneOffset() * 60000);
+  const brasiliaTime = new Date(utcTime + (brasiliaOffset * 60000));
   
-  // Horários fixos: 10:00, 14:00, 17:00, 19:15
+  // Cria data de hoje em Brasília às 00:00:00
+  const today = new Date(brasiliaTime.getFullYear(), brasiliaTime.getMonth(), brasiliaTime.getDate(), 0, 0, 0, 0);
+  
+  // Horários fixos: 10:00, 14:00, 17:00, 19:15 (horário de Brasília)
   const times = [
     { hour: 10, minute: 0 },
     { hour: 14, minute: 0 },
@@ -234,9 +243,12 @@ export function getNextRun() {
     { hour: 19, minute: 15 }
   ];
   
-  // Pega hora e minuto atual
-  const currentHour = now.getHours();
-  const currentMinute = now.getMinutes();
+  // Pega hora e minuto atual em Brasília
+  const currentHour = brasiliaTime.getHours();
+  const currentMinute = brasiliaTime.getMinutes();
+  
+  console.log(`   ⏰ getNextRun: Hora atual em Brasília: ${currentHour}:${currentMinute.toString().padStart(2, '0')}`);
+  console.log(`   ⏰ getNextRun: Procurando próximo agendamento entre: ${times.map(t => `${t.hour}:${t.minute.toString().padStart(2, '0')}`).join(', ')}`);
   
   // Encontra o próximo horário de hoje
   for (const { hour, minute } of times) {
@@ -244,7 +256,14 @@ export function getNextRun() {
     if (hour > currentHour || (hour === currentHour && minute > currentMinute)) {
       const scheduled = new Date(today);
       scheduled.setHours(hour, minute, 0, 0);
-      return scheduled;
+      
+      // Converte de volta para UTC para retornar
+      const scheduledUTC = new Date(scheduled.getTime() - (brasiliaOffset * 60000));
+      
+      console.log(`   ✅ getNextRun: Próximo agendamento encontrado: ${hour}:${minute.toString().padStart(2, '0')} (hoje)`);
+      console.log(`   📅 getNextRun: Data retornada: ${scheduledUTC.toISOString()} (${scheduledUTC.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })})`);
+      
+      return scheduledUTC;
     }
   }
   
@@ -253,7 +272,13 @@ export function getNextRun() {
   tomorrow.setDate(tomorrow.getDate() + 1);
   tomorrow.setHours(10, 0, 0, 0);
   
-  return tomorrow;
+  // Converte de volta para UTC
+  const tomorrowUTC = new Date(tomorrow.getTime() - (brasiliaOffset * 60000));
+  
+  console.log(`   ⚠️ getNextRun: Todos os horários de hoje já passaram, retornando primeiro de amanhã: 10:00`);
+  console.log(`   📅 getNextRun: Data retornada: ${tomorrowUTC.toISOString()} (${tomorrowUTC.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })})`);
+  
+  return tomorrowUTC;
 }
 
 /**
